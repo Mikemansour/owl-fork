@@ -1,0 +1,4 @@
+-e .
+pip>=23.0
+chroma-hnswlib>=0.7.3
+uwsgi>=2.0.22
