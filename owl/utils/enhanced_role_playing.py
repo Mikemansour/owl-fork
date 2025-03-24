@@ -290,3 +290,245 @@ Please note that our overall task may be very complicated. Here are some tips th
                     msgs=[user_msg], terminated=False, info=user_response.info
                 ),
             )
+        assistant_msg = self._reduce_message_options(assistant_response.msgs)
+
+        modified_assistant_msg = deepcopy(assistant_msg)
+        if "TASK_DONE" not in user_msg.content:
+            modified_assistant_msg.content += f"""\n
+                Provide me with the next instruction and input (if needed) based on my response and our current task: <task>{self.task_prompt}</task>
+                Before producing the final answer, please check whether I have rechecked the final answer using different toolkit as much as possible. If not, please remind me to do that.
+                If I have written codes, remind me to run the codes.
+                If you think our task is done, reply with `TASK_DONE` to end our conversation.
+            """
+
+        return (
+            ChatAgentResponse(
+                msgs=[assistant_msg],
+                terminated=assistant_response.terminated,
+                info=assistant_response.info,
+            ),
+            ChatAgentResponse(
+                msgs=[user_msg],
+                terminated=user_response.terminated,
+                info=user_response.info,
+            ),
+        )
+
+
+class OwlGAIARolePlaying(OwlRolePlaying):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+
+    def step(
+        self, assistant_msg: BaseMessage
+    ) -> Tuple[ChatAgentResponse, ChatAgentResponse]:
+        user_response = self.user_agent.step(assistant_msg)
+        if user_response.terminated or user_response.msgs is None:
+            return (
+                ChatAgentResponse(msgs=[], terminated=False, info={}),
+                ChatAgentResponse(
+                    msgs=[],
+                    terminated=user_response.terminated,
+                    info=user_response.info,
+                ),
+            )
+        user_msg = self._reduce_message_options(user_response.msgs)
+
+        modified_user_msg = deepcopy(user_msg)
+
+        if "TASK_DONE" not in user_msg.content:
+            modified_user_msg.content += f"""\n
+            Here are auxiliary information about the overall task, which may help you understand the intent of the current task:
+            <auxiliary_information>
+            {self.task_prompt}
+            </auxiliary_information>
+            If there are available tools and you want to call them, never say 'I will ...', but first call the tool and reply based on tool call's result, and tell me which tool you have called.
+            """
+
+        else:
+            # The task is done, and the assistant agent need to give the final answer about the original task
+            modified_user_msg.content += f"""\n
+            Now please make a final answer of the original task based on our conversation : <task>{self.task_prompt}</task>
+            Please pay special attention to the format in which the answer is presented.
+            You should first analyze the answer format required by the question and then output the final answer that meets the format requirements. 
+            Your response should include the following content:
+            - `analysis`: enclosed by <analysis> </analysis>, a detailed analysis of the reasoning result.
+            - `final_answer`: enclosed by <final_answer> </final_answer>, the final answer to the question.
+            Here are some hint about the final answer:
+            <hint>
+            Your final answer must be output exactly in the format specified by the question. It should be a number OR as few words as possible OR a comma separated list of numbers and/or strings:
+            - If you are asked for a number, don't use comma to write your number neither use units such as $ or percent sign unless specified otherwise. 
+            - If you are asked for a string, don't use articles, neither abbreviations (e.g. for cities), and write the digits in plain text unless specified otherwise. 
+            - If you are asked for a comma separated list, apply the above rules depending of whether the element to be put in the list is a number or a string.
+            </hint>
+            """
+
+        # process assistant's response
+        assistant_response = self.assistant_agent.step(modified_user_msg)
+        if assistant_response.terminated or assistant_response.msgs is None:
+            return (
+                ChatAgentResponse(
+                    msgs=[],
+                    terminated=assistant_response.terminated,
+                    info=assistant_response.info,
+                ),
+                ChatAgentResponse(
+                    msgs=[user_msg], terminated=False, info=user_response.info
+                ),
+            )
+        assistant_msg = self._reduce_message_options(assistant_response.msgs)
+
+        modified_assistant_msg = deepcopy(assistant_msg)
+        if "TASK_DONE" not in user_msg.content:
+            modified_assistant_msg.content += f"""\n
+                Provide me with the next instruction and input (if needed) based on my response and our current task: <task>{self.task_prompt}</task>
+                Before producing the final answer, please check whether I have rechecked the final answer using different toolkit as much as possible. If not, please remind me to do that.
+                If I have written codes, remind me to run the codes.
+                If you think our task is done, reply with `TASK_DONE` to end our conversation.
+            """
+
+        # return the modified messages
+        return (
+            ChatAgentResponse(
+                msgs=[modified_assistant_msg],
+                terminated=assistant_response.terminated,
+                info=assistant_response.info,
+            ),
+            ChatAgentResponse(
+                msgs=[modified_user_msg],
+                terminated=user_response.terminated,
+                info=user_response.info,
+            ),
+        )
+
+
+def run_society(
+    society: OwlRolePlaying,
+    round_limit: int = 15,
+) -> Tuple[str, List[dict], dict]:
+    overall_completion_token_count = 0
+    overall_prompt_token_count = 0
+
+    chat_history = []
+    init_prompt = """
+    Now please give me instructions to solve over overall task step by step. If the task requires some specific knowledge, please instruct me to use tools to complete the task.
+        """
+    input_msg = society.init_chat(init_prompt)
+    for _round in range(round_limit):
+        assistant_response, user_response = society.step(input_msg)
+        # Check if usage info is available before accessing it
+        if assistant_response.info.get("usage") and user_response.info.get("usage"):
+            overall_completion_token_count += assistant_response.info["usage"].get(
+                "completion_tokens", 0
+            ) + user_response.info["usage"].get("completion_tokens", 0)
+            overall_prompt_token_count += assistant_response.info["usage"].get(
+                "prompt_tokens", 0
+            ) + user_response.info["usage"].get("prompt_tokens", 0)
+
+        # convert tool call to dict
+        tool_call_records: List[dict] = []
+        if assistant_response.info.get("tool_calls"):
+            for tool_call in assistant_response.info["tool_calls"]:
+                tool_call_records.append(tool_call.as_dict())
+
+        _data = {
+            "user": user_response.msg.content
+            if hasattr(user_response, "msg") and user_response.msg
+            else "",
+            "assistant": assistant_response.msg.content
+            if hasattr(assistant_response, "msg") and assistant_response.msg
+            else "",
+            "tool_calls": tool_call_records,
+        }
+
+        chat_history.append(_data)
+        logger.info(
+            f"Round #{_round} user_response:\n {user_response.msgs[0].content if user_response.msgs and len(user_response.msgs) > 0 else ''}"
+        )
+        logger.info(
+            f"Round #{_round} assistant_response:\n {assistant_response.msgs[0].content if assistant_response.msgs and len(assistant_response.msgs) > 0 else ''}"
+        )
+
+        if (
+            assistant_response.terminated
+            or user_response.terminated
+            or "TASK_DONE" in user_response.msg.content
+        ):
+            break
+
+        input_msg = assistant_response.msg
+
+    answer = chat_history[-1]["assistant"]
+    token_info = {
+        "completion_token_count": overall_completion_token_count,
+        "prompt_token_count": overall_prompt_token_count,
+    }
+
+    return answer, chat_history, token_info
+
+
+async def arun_society(
+    society: OwlRolePlaying,
+    round_limit: int = 15,
+) -> Tuple[str, List[dict], dict]:
+    overall_completion_token_count = 0
+    overall_prompt_token_count = 0
+
+    chat_history = []
+    init_prompt = """
+    Now please give me instructions to solve over overall task step by step. If the task requires some specific knowledge, please instruct me to use tools to complete the task.
+        """
+    input_msg = society.init_chat(init_prompt)
+    for _round in range(round_limit):
+        assistant_response, user_response = await society.astep(input_msg)
+        # Check if usage info is available before accessing it
+        if assistant_response.info.get("usage") and user_response.info.get("usage"):
+            overall_prompt_token_count += assistant_response.info["usage"].get(
+                "completion_tokens", 0
+            )
+            overall_prompt_token_count += assistant_response.info["usage"].get(
+                "prompt_tokens", 0
+            ) + user_response.info["usage"].get("prompt_tokens", 0)
+
+        # convert tool call to dict
+        tool_call_records: List[dict] = []
+        if assistant_response.info.get("tool_calls"):
+            for tool_call in assistant_response.info["tool_calls"]:
+                tool_call_records.append(tool_call.as_dict())
+
+        _data = {
+            "user": user_response.msg.content
+            if hasattr(user_response, "msg") and user_response.msg
+            else "",
+            "assistant": assistant_response.msg.content
+            if hasattr(assistant_response, "msg") and assistant_response.msg
+            else "",
+            "tool_calls": tool_call_records,
+        }
+
+        chat_history.append(_data)
+        logger.info(
+            f"Round #{_round} user_response:\n {user_response.msgs[0].content if user_response.msgs and len(user_response.msgs) > 0 else ''}"
+        )
+        logger.info(
+            f"Round #{_round} assistant_response:\n {assistant_response.msgs[0].content if assistant_response.msgs and len(assistant_response.msgs) > 0 else ''}"
+        )
+
+        # Check other termination conditions
+        if (
+            assistant_response.terminated
+            or user_response.terminated
+            or "TASK_DONE" in user_response.msg.content
+            or "任务已完成" in user_response.msg.content
+        ):
+            break
+
+        input_msg = assistant_response.msg
+
+    answer = chat_history[-1]["assistant"]
+    token_info = {
+        "completion_token_count": overall_completion_token_count,
+        "prompt_token_count": overall_prompt_token_count,
+    }
+
+    return answer, chat_history, token_info
