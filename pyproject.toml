@@ -1,0 +1,72 @@
+[build-system]
+requires = ["setuptools>=42", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "owl"
+version = "0.1.0"
+description = "Optimized Workforce Learning for General Multi-Agent Assistance"
+authors = [{name = "CAMEL-AI", email = "info@camel-ai.org"}]
+readme = "README.md"
+dependencies = [
+    "camel",
+    "ollama",
+    "openai>=1.1.1",
+    "langchain",
+    "python-dotenv",
+    "pydantic>=2.0",
+    "requests",
+    "tiktoken",
+    "tenacity",
+    "beautifulsoup4",
+    "google-api-python-client",
+    "pillow",
+    "duckduckgo-search",
+    "wikipedia",
+    "pydub",
+    "nest-asyncio",
+    "fastapi",
+    "uvicorn",
+    "playwright",
+    "matplotlib",
+    "httpx",
+    "semantic-kernel",
+    "watchdog",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-cov",
+    "pytest-asyncio",
+    "pytest-mock",
+    "pytest-timeout",
+    "mypy",
+    "black",
+    "isort",
+    "flake8",
+    "pre-commit",
+]
+
+[tool.setuptools]
+include-package-data = true
+package-dir = {"" = "."}
+
+[tool.black]
+line-length = 88
+include = '\.pyi?$'
+target-version = ['py310']
+
+[tool.isort]
+profile = "black"
+
+[tool.mypy]
+python_version = "3.10"
+show_error_codes = true
+follow_imports = "silent"
+strict_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+disallow_any_generics = true
+check_untyped_defs = true
+disallow_untyped_defs = false
